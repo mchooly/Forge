@@ -45,29 +45,69 @@ def ask(prompt):
     return "q" if raw in ("q", "quit", "exit") else raw
 
 
+# 选项多过这个数才提示「可以过滤」。9 个提交方式那种短菜单不需要——
+# 多印一行提示反而是噪音。
+_FILTER_HINT_FROM = 12
+
+
 def menu(title, options, current=None, allow_cancel=True):
-    """编号菜单。
+    """编号菜单，**选项多时可以直接输入文字过滤**。
 
     options 是 [(值, 说明)]，也可以给三元组 [(值, 说明, 显示文本)]——
     显示和取值分开，是为了能显示「SQL 注入 sqli」而返回 `sqli`。
     返回选中的值 / None=取消 / 'q'=退出。
+
+    过滤是为了「全部可用模板」那个菜单：默认 sqli 视图就有 134 项、
+    不限漏洞类型 584 项，一次打印出来是几屏，而用户往往是**从文档里
+    已经知道 id**（`sqli.mysql.union.basic`）才来的——输几个字符直接命中，
+    比在 134 行里找快得多。GUI 那边有搜索框，这里对齐。
+
+    编号按**过滤后的列表**算：过滤完输 `3` 选的是过滤结果的第 3 条。
     """
-    print("\n%s" % title)
-    for i, opt in enumerate(options, 1):
-        val, note = opt[0], opt[1]
-        show = opt[2] if len(opt) > 2 else val
-        print("  %2d) %s %s%s" % (i, pad(show, 30), note, "  *" if val == current else ""))
-    if allow_cancel:
-        print("   0) 取消")
+    def render(opts):
+        print("\n%s" % title)
+        for i, opt in enumerate(opts, 1):
+            val, note = opt[0], opt[1]
+            show = opt[2] if len(opt) > 2 else val
+            print("  %2d) %s %s%s" % (i, pad(show, 30), note, "  *" if val == current else ""))
+        if allow_cancel:
+            print("   0) 取消")
+        if len(options) >= _FILTER_HINT_FROM:
+            print("   输文字=过滤 · * =显示全部 · q=退出")
+
+    shown = options
+    render(shown)
     while True:
         raw = ask("选择 > ")
         if raw in (None, "q"):
             return raw
         if raw == "0" and allow_cancel:
             return None
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            return options[int(raw) - 1][0]
-        print("  请输入 0-%d" % len(options))
+        if raw.isdigit():
+            k = int(raw)
+            if 1 <= k <= len(shown):
+                return shown[k - 1][0]
+            print("  请输入 0-%d" % len(shown))
+            continue
+        # 非数字 → 当关键字过滤。三处都匹配：取值 id、显示文本、说明，
+        # 因为用户可能在找「union.basic」（id）、「JSP」（显示名）或
+        # 「反弹」（说明里才有）。
+        if raw == "*":
+            shown = options
+        else:
+            q = raw.lower()
+            def text(o):
+                return " ".join(str(x) for x in (o[0], o[1], o[2] if len(o) > 2 else ""))
+            hit = [o for o in options if q in text(o).lower()]
+            if not hit:
+                # 过滤不到就复原，别把用户晾在一个空菜单里
+                shown = options
+                print("  没有匹配「%s」的，已显示全部 %d 项" % (raw, len(options)))
+                render(shown)
+                continue
+            shown = hit
+        print("  匹配 %d / %d 条" % (len(shown), len(options)))
+        render(shown)
 
 
 def draw(rules, st):

@@ -2247,6 +2247,42 @@ def smoke_tui(rules, fails):
 
 
 
+    # 6. 模板菜单的过滤。默认视图 134 项、不限漏洞类型 584 项，一次打印是几屏——
+    #    能输几个字符直接命中是主要用法。这里钉两件事：过滤真的缩小了列表、
+    #    **编号按过滤后的列表算**（这条最容易写错：沿用过滤前的序号就会选错模板）。
+
+    # run() 是**原地**补全并修改传入的 dict，所以状态从它身上拿
+
+    st = {"outputs": ["raw"]}
+
+    text = drive(["t", "union.basic", "2", "q"], st)
+
+    if st.get("template") != "sqli.mysql.union.basic":
+
+        fails.append("smoke_tui: 过滤后按编号选中错了——期望 sqli.mysql.union.basic，"
+
+                     "实际 %r" % st.get("template"))
+
+    if "匹配 5 / 134" not in text:
+
+        fails.append("smoke_tui: 菜单过滤没有收窄列表（应提示「匹配 5 / 134」）")
+
+
+
+    # 7. 过滤不到要复原，不能把用户晾在一个空菜单里
+
+    st = {"outputs": ["raw"]}
+
+    text = drive(["t", "zzzz不存在", "1", "q"], st)
+
+    if "没有匹配" not in text or st.get("template") != "sqli.mssql.detect.version":
+
+        fails.append("smoke_tui: 过滤不到时应复原成全量列表，实际选中 %r"
+
+                     % st.get("template"))
+
+
+
 
 
 def main():
