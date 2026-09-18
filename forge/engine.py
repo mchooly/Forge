@@ -47,6 +47,15 @@ def load_rules(data_dir):
         # 展示标签（data/labels.yaml）。分维度合并，多文件写同一维度也能并起来
         for kind, table in (doc.get("labels") or {}).items():
             labels.setdefault(kind, {}).update(table or {})
+
+    # 空规则库必须**报错**，不能静默返回空集。
+    # `data/` 被改名、或拷贝时漏了它，glob 一个文件都没匹配到——不抛的话
+    # 界面会显示「0 条模板」，还会把原因说成「规则库本身可能没覆盖这个组合」，
+    # 把人往「换个筛选组合试试」的方向引，而真正的问题是数据根本不在这儿。
+    # tui.main 和 gui.main 都已经写好了 except 分支，等的就是这个异常。
+    if not templates:
+        raise RuleError("规则库为空：%s —— 检查 data/ 是否存在、是否被改名，"
+                        "或拷贝是否完整" % data_dir)
     return {
         "templates": templates,
         "bypasses": bypasses,
