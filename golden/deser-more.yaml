@@ -214,8 +214,9 @@ samples:
       # 7 个属性：handler(r:2 自引用) / bufferSize / buffer / level /
       # initialized / bufferLimit / processors=['current','system']
       payload: "O:32:\"Monolog\\Handler\\SyslogUdpHandler\":1:{s:9:\"\0*\0socket\";O:29:\"Monolog\\Handler\\BufferHandler\":7:{s:10:\"\0*\0handler\";r:2;s:13:\"\0*\0bufferSize\";i:-1;s:9:\"\0*\0buffer\";a:1:{i:0;a:2:{i:0;s:2:\"id\";s:5:\"level\";N;}}s:8:\"\0*\0level\";N;s:14:\"\0*\0initialized\";b:1;s:14:\"\0*\0bufferLimit\";i:-1;s:13:\"\0*\0processors\";a:2:{i:0;s:7:\"current\";i:1;s:6:\"system\";}}}"
-      # 校验器明说自己没建模 C:/R:/r:，所以是「未校验」而不是「失败」
-      syntax: unchecked
+      # BufferHandler 的 handler 属性 r:2 指回自己（上一层那个对象）。
+      # 引用现在**有校验器了**——校验器独立实现了 PHP 那份编号规则并核对了指向
+      syntax: ok
 
   - name: Guzzle FileCookieJar 写文件（FW1）
     state:
@@ -271,7 +272,7 @@ samples:
       # private 属性 data 的 mangled 名是 \0think\Model\0data —— 它来自 Model use 的
       # trait，用的是「使用 trait 的那个类」；r:9 是出处里原样的自引用编号
       payload: "O:27:\"think\\process\\pipes\\Windows\":1:{s:34:\"\0think\\process\\pipes\\Windows\0files\";a:1:{i:0;O:17:\"think\\model\\Pivot\":2:{s:9:\"\0*\0append\";a:1:{s:5:\"ethan\";a:2:{i:0;s:3:\"dir\";i:1;s:4:\"calc\";}}s:17:\"\0think\\Model\0data\";a:1:{s:5:\"ethan\";O:13:\"think\\Request\":3:{s:7:\"\0*\0hook\";a:1:{s:7:\"visible\";a:2:{i:0;r:9;i:1;s:6:\"isAjax\";}}s:9:\"\0*\0filter\";s:6:\"system\";s:9:\"\0*\0config\";a:1:{s:8:\"var_ajax\";s:0:\"\";}}}}}}"
-      syntax: unchecked
+      syntax: ok
 
   - name: ThinkPHP 5.1 · 换键名
     state:
@@ -282,7 +283,7 @@ samples:
     expect:
       # 键名出现两处（append 与 data 的键），两处的长度前缀都是 5
       payload: "O:27:\"think\\process\\pipes\\Windows\":1:{s:34:\"\0think\\process\\pipes\\Windows\0files\";a:1:{i:0;O:17:\"think\\model\\Pivot\":2:{s:9:\"\0*\0append\";a:1:{s:5:\"Ki1ro\";a:2:{i:0;s:3:\"dir\";i:1;s:4:\"calc\";}}s:17:\"\0think\\Model\0data\";a:1:{s:5:\"Ki1ro\";O:13:\"think\\Request\":3:{s:7:\"\0*\0hook\";a:1:{s:7:\"visible\";a:2:{i:0;r:9;i:1;s:6:\"isAjax\";}}s:9:\"\0*\0filter\";s:6:\"system\";s:9:\"\0*\0config\";a:1:{s:8:\"var_ajax\";s:0:\"\";}}}}}}"
-      syntax: unchecked
+      syntax: ok
 
   - name: Yii2 BatchQueryResult 链
     state:

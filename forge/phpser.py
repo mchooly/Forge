@@ -29,6 +29,18 @@
 | `a{...}` | `a:<项数>:{...}` | 数组 |
 | `O:类名{...}` | `O:<类名字节数>:"类名":<项数>:{...}` | 对象 |
 
+引用（POP 链里 `$obj->prop = $obj` 这类形状必须用）：
+
+| 写法 | 展开成 | 说明 |
+| --- | --- | --- |
+| `&标签` | —— | 标在紧跟的那个值前面，给它起个名字。**根上也能打** |
+| `r:标签` | `r:<号>;` | 指同一个对象（PHP 的对象句柄） |
+| `R:标签` | `R:<号>;` | 指真引用（PHP 的 `&`） |
+
+    &r O:A{ p=r:r }                      自引用
+    O:B{ x=&o O:A{} y=r:o }              两个属性指向同一个对象
+    a{ i:0=&z O:Z{} i:1=r:z i:2=r:z }    数组里重复引用同一个对象
+
 项之间用空白分隔，键后面可以跟一个 `=` 或 `:`——纯粹为了好读，工具会忽略它：
 
 | 键 | 用于 | 说明 |
@@ -43,15 +55,30 @@
 包括 `;` `}`——**长度前缀就是为了让内容可以原样出现**（PHP 自己不转义引号，
 `serialize('a"b')` 得到的正是 `s:3:"a"b";`，所以解析靠长度而不是找引号）。
 
+## 引用编号规则
+
+编号是 `R:` / `r:` 要指的那个数。**规则全部由真实 PHP 实测确定**（PHP 7.0.12，
+样本见 `golden/phpser.yaml` 里「引用」那一组，期望值都跟 `serialize()` 对拍过）：
+
+1. 计数器从 1 开始，**先序**——容器先占自己的号，再递归子值
+2. 每个**值**占一个号，包括 `N` 和标量
+3. **键一律不占号**（数组键、属性名都一样）
+4. **`R:` / `r:` 的产出本身也占一个号**。这条最容易漏：漏了的话，
+   引用**之后**的每个值都会偏一号
+
+第 4 条决定了必须**两遍走**（先把号全编出来再发射）。单遍边编边发，
+遇到引用时计数器就与 PHP 不一致了。
+
 ## 边界
 
-- **不做引用（`R:` / `r:`）**。它要维护 PHP 内部那份「第几个值」的编号，而那份编号
-  的算法（键算不算一个槽位）我没有可靠出处，做错了就是静默错——需要引用的链
-  （少数 Laravel gadget）请用 phpggc 生成后当变量贴进来。
 - 不做 `E:`（enum，PHP 8.1）、不做 `C:`（Serializable 自定义格式）。
+  这两样的展开规则没有实测过，宁可不做也不猜。
+- **不做「值相同就自动合并成引用」**。PHP 只在真引用（`&`）和同一对象上产出
+  `R:`/`r:`，数组是值类型、拷贝会**完整写两遍**（实测过）。自动合并会产出
+  PHP 自己不会产的东西。
 - **只生成不解析**——解析（校验）在 `forge/syntax.py` 里，两处独立实现。
   这是有意的：生成与校验共用一份代码的话，同一个理解错误会在两边同时成立，
-  校验就成了摆设。
+  校验就成了摆设。引用这块两边各写了一遍编号逻辑，就是靠这条互相兜底。
 """
 
 import re
@@ -159,29 +186,35 @@ class _Parser:
         c = self.peek()
         if c == "":
             self.err("这里要一个值")
+        # 引用：`r:标签` 是同一对象，`R:标签` 是真引用（&）。两者都指向
+        # 前面用 `&标签` 标过的那个值，展开成它的槽位号。
+        if c in "rR" and self.s.startswith(c + ":", self.i):
+            marker = c
+            self.i += 2
+            label = self.ident("标签名")
+            return ("ref", marker, label)
         if c == "N":
             self.i += 1
-            return "N;"
+            return ("null",)
         if c == "b":
             self.take("b:")
             self.skip_ws()
             v = self.number()
             if v not in ("0", "1"):
                 self.err("布尔只能是 b:0 或 b:1")
-            return "b:%s;" % v
+            return ("bool", v)
         if c == "i":
             self.take("i:")
             self.skip_ws()
-            return "i:%s;" % self.number()
+            return ("int", self.number())
         if c == "d":
             self.take("d:")
             self.skip_ws()
-            return "d:%s;" % self.number()
+            return ("float", self.number())
         if c == "s":
             self.take("s:")
             self.skip_ws()
-            text = self.quoted()
-            return 's:%d:"%s";' % (self.slen(text), text)
+            return ("str", self.quoted())
         if c == "a":
             self.i += 1
             self.skip_ws()
@@ -192,7 +225,7 @@ class _Parser:
             name = self.ident("类名")
             self.skip_ws()
             return self.container(depth, is_array=False, cls=name)
-        self.err("认不出的值（只支持 N / b: / i: / d: / s: / a{ / O:类名{）")
+        self.err("认不出的值（只支持 N / b: / i: / d: / s: / a{ / O:类名{ / r: / R:）")
 
     def container(self, depth, is_array, cls=None):
         self.take("{")
@@ -205,10 +238,9 @@ class _Parser:
                 self.err("容器没有收尾的 }")
             items.append(self.item(depth + 1, is_array, cls))
         self.take("}")
-        body = "".join(items)
         if is_array:
-            return "a:%d:{%s}" % (len(items), body)
-        return 'O:%d:"%s":%d:{%s}' % (self.slen(cls), cls, len(items), body)
+            return ("array", items)
+        return ("object", cls, items)
 
     def item(self, depth, is_array, cls):
         if is_array:
@@ -216,12 +248,11 @@ class _Parser:
             if c == "i":
                 self.take("i:")
                 self.skip_ws()
-                key = "i:%s;" % self.number()
+                key = ("ikey", self.number())
             elif c == "s":
                 self.take("s:")
                 self.skip_ws()
-                k = self.quoted()
-                key = 's:%d:"%s";' % (self.slen(k), k)
+                key = ("skey", self.quoted())
             else:
                 self.err('数组的键要写成 i:0 或 s:"名字"')
         else:
@@ -248,21 +279,117 @@ class _Parser:
                     if not cls:
                         self.err("private 属性只能写在 O:类名{...} 里")
                     name = "\0%s\0%s" % (cls, name)
-            key = 's:%d:"%s";' % (self.slen(name), name)
+            key = ("pkey", name)
 
         self.skip_ws()
         if self.peek() in "=:":     # 装饰性的，只为好读
             self.i += 1
-        return key + self.value(depth, cls)
+        label = self.opt_label()
+        node = self.value(depth, cls)
+        if label is not None:
+            node = ("labeled", label, node)
+        return (key, node)
+
+    def opt_label(self):
+        """可选的 `&标签`。标在它紧跟的那个值上，之后的 `r:标签` / `R:标签` 指回来。
+
+        根上也能打——`$obj->p = $obj` 这种自引用链必须靠它，
+        否则最外层那个对象没有名字可以指。
+        """
+        self.skip_ws()
+        if self.peek() != "&":
+            return None
+        self.i += 1
+        name = self.ident("标签名")
+        self.skip_ws()
+        return name
+
+
+# ---------------------------------------------------------------- 编号与发射
+#
+# 编号规则**全部由真实 PHP 实测确定**（PHP 7.0.12，见 golden/phpser.yaml 的样本）：
+#
+#   1. 计数器从 1 开始，**先序**遍历——容器先占自己的号，再递归子值
+#   2. 每个「值」占一个号，包括 N 和标量
+#   3. **键一律不占号**（数组键、属性名都一样）
+#   4. **`R:`/`r:` 的产出本身也占一个号**——实测：连续两个 r: 会让后面的
+#      新值落到 6 号；这一条最容易漏，漏了后面所有引用号都会偏
+#   5. `r:N` 指同一个对象（PHP 对象句柄），`R:N` 指真引用（&）
+#
+# 第 4 条决定了两遍走：先把号全编出来，再发射。单遍边编边发会在遇到引用时
+# 把计数器推到与 PHP 不一致的位置。
+
+
+def _number(node, ctr, labels):
+    """先序编号。返回这个节点拿到的号；labels 记下「标签 -> 号」。"""
+    if node[0] == "labeled":
+        # 标签本身不占号，占号的是它标住的那个值
+        slot = _number(node[2], ctr, labels)
+        name = node[1]
+        if name in labels:
+            raise SpecError("标签 %r 定义了两次" % name)
+        labels[name] = slot
+        return slot
+
+    slot = ctr[0]
+    ctr[0] += 1
+    if node[0] == "array":
+        for _, val in node[1]:
+            _number(val, ctr, labels)      # 键不调用 _number
+    elif node[0] == "object":
+        for _, val in node[2]:
+            _number(val, ctr, labels)
+    return slot
+
+
+def _emit(node, labels):
+    kind = node[0]
+    if kind == "labeled":
+        return _emit(node[2], labels)
+    if kind == "ref":
+        marker, label = node[1], node[2]
+        if label not in labels:
+            raise SpecError("引用了没有定义过的标签 %r（要先用 &%s 标在某个值前面）"
+                            % (label, label))
+        return "%s:%d;" % (marker, labels[label])
+    if kind == "null":
+        return "N;"
+    if kind == "bool":
+        return "b:%s;" % node[1]
+    if kind == "int":
+        return "i:%s;" % node[1]
+    if kind == "float":
+        return "d:%s;" % node[1]
+    if kind == "str":
+        return 's:%d:"%s";' % (len(node[1].encode("utf-8")), node[1])
+    if kind == "array":
+        body = "".join(_emit_key(k) + _emit(v, labels) for k, v in node[1])
+        return "a:%d:{%s}" % (len(node[1]), body)
+    body = "".join(_emit_key(k) + _emit(v, labels) for k, v in node[2])
+    cls = node[1]
+    return 'O:%d:"%s":%d:{%s}' % (len(cls.encode("utf-8")), cls, len(node[2]), body)
+
+
+def _emit_key(key):
+    kind, val = key
+    if kind == "ikey":
+        return "i:%s;" % val
+    return 's:%d:"%s";' % (len(val.encode("utf-8")), val)
 
 
 def build(spec):
     """把结构描述展开成 PHP 序列化串。结构有问题时抛 `SpecError`。"""
     p = _Parser(spec)
-    out = p.value(0)
+    root_label = p.opt_label()
+    tree = p.value(0)
+    if root_label is not None:
+        tree = ("labeled", root_label, tree)
     p.skip_ws()
     if p.i != len(p.s):
         p.err("结构描述解析完了还有多余内容")
+    labels = {}
+    _number(tree, [1], labels)
+    out = _emit(tree, labels)
     if len(out.encode("utf-8")) > MAX_OUT:
         raise SpecError("展开结果超过 %d 字节，多半是哪里写错了" % MAX_OUT)
     return out

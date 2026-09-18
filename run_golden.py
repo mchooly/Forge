@@ -1689,7 +1689,9 @@ def smoke_phpser(rules, fails):
 
     # 判 fail 会让用户去改一条本来正确的载荷，比漏报更糟
 
-    for payload in ('C:3:"Foo":5:{a:1:{}}', 'R:1;', 'r:2;'):
+    # 引用（R:/r:）以前也在这张单子上，现在**建模了**，见下面一组。
+
+    for payload in ('C:3:"Foo":5:{a:1:{}}',):
 
         st, _ = syntax.check(payload, "serialized")
 
@@ -1698,6 +1700,42 @@ def smoke_phpser(rules, fails):
             fails.append("smoke_phpser: 未建模的 %r 应当判 unchecked，实际 %s"
 
                          % (payload, st))
+
+
+
+    # ---- 引用：期望值**全部来自真实 PHP 的 unserialize 判定** ----
+
+    # 不是照着 syntax.py 的实现反推的——那样实现错了测试也跟着错，
+
+    # 就成了自我确认。这批值是在 PHP 7.0.12 上逐条跑出来的。
+
+    for payload, want in (
+
+            ('O:1:"A":1:{s:1:"p";r:1;}', "ok"),      # 自引用，PHP 成功
+
+            ('a:2:{i:0;s:1:"v";i:1;r:2;}', "ok"),    # 指向前一个值，PHP 成功
+
+            ('a:2:{i:0;s:1:"v";i:1;R:2;}', "ok"),    # 真引用，PHP 成功
+
+            ('a:2:{i:0;s:1:"v";i:1;r:3;}', "fail"),  # 指向「引用自己那个号」，PHP false
+
+            ('a:2:{i:0;s:1:"v";i:1;r:9;}', "fail"),  # 越界，PHP false
+
+            ('a:2:{i:0;s:1:"v";i:1;r:0;}', "fail"),  # 号从 1 起，PHP false
+
+            ('a:2:{i:0;i:5;i:1;r:2;}', "ok"),        # r: 指向非对象——PHP 照样成功，
+
+                                                     # 所以**不能**检查目标类型，查了就是误报
+
+    ):
+
+        st, _ = syntax.check(payload, "serialized")
+
+        if st != want:
+
+            fails.append("smoke_phpser: %r 应当判 %s，实际 %s（期望值来自真实 PHP）"
+
+                         % (payload, want, st))
 
 
 

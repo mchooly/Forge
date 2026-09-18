@@ -40,6 +40,12 @@ def _parse_php_serialized(s):
     data = s.encode("utf-8")
     n = len(data)
     escaped = [0]          # 见到几处 `S:` 转义串（它们的长度前缀没法校验）
+    # PHP 内部那份「第几个值」的编号，用来校验 `R:` / `r:` 指向哪里。
+    # 规则**全部由真实 PHP 实测确定**，和 phpser.py 里那份是**各自独立实现**的：
+    #   先序——每个值占一个号（含 N 和标量），容器先占自己的号再递归子值；
+    #   键一律不占号（数组键、属性名都一样）；`R:`/`r:` 的产出本身也占一个号。
+    #   合法引用区间：1 <= N < 引用自己占的那个号。
+    slots = [1]
 
     def fail(msg, at):
         raise ValueError("%s（偏移 %d）" % (msg, at))
@@ -75,6 +81,10 @@ def _parse_php_serialized(s):
             fail("嵌套超过 64 层", i)
         if i >= n:
             fail("还差一个值，但已经到结尾了", i)
+        # 每个值占一个号，先序（容器先占号再递归）。键在下面的 a: 分支里回滚。
+        # 引用校验要用「引用自己占的号」，所以从**自增前**取。
+        slot = slots[0]
+        slots[0] += 1
         c = data[i:i + 1]
         if c == b"N":
             return expect(i, b"N;")
@@ -120,7 +130,11 @@ def _parse_php_serialized(s):
             cnt, i = digits(expect(i, b"a:"))
             i = expect(i, b":{")
             for _ in range(cnt):
-                i = value(i, depth + 1)      # 键也是一个值
+                # 键语法上是个值（`i:0;` / `s:"k";`），但**不进 PHP 的编号**，
+                # 所以把计数器回滚掉——不回滚的话后面每个引用号都会偏。
+                mark = slots[0]
+                i = value(i, depth + 1)
+                slots[0] = mark
                 i = value(i, depth + 1)
             return expect(i, b"}")
         if c == b"O":
@@ -139,8 +153,28 @@ def _parse_php_serialized(s):
             return expect(i, b"}")
         if c == b"E":                            # PHP 8.1 的枚举
             return sized_string(expect(i, b"E:"))
-        if c in (b"C", b"R", b"r"):
-            raise _Unsupported("C:/R:/r: 没有建模")
+        if c in (b"R", b"r"):
+            # 引用。合法区间 **1 <= N < 引用自己占的号**，全部由真实 PHP 实测：
+            #   r:3（正好是自己那个号）失败 · r:2（前一个值）成功 ·
+            #   r:1（容器自己）成功 · r:0 失败 · 越界/指向尚未出现的号失败。
+            #
+            # **不检查目标类型**：实测 `r:` 指向字符串或整数，PHP 照样
+            # unserialize 成功。查了就是误报，而误报比不判更糟——用户会去
+            # 改一条本来正确的载荷（这条教训 pickle 那次已经吃过一遍）。
+            i = expect(i, c + b":")
+            j = i + 1 if data[i:i + 1] == b"-" else i
+            k = j
+            while k < n and 48 <= data[k] <= 57:
+                k += 1
+            if k == j:
+                fail("引用缺少编号", i)
+            num = int(data[i:k])
+            if not 1 <= num < slot:
+                fail("%s:%d 指向一个还没出现的值（它自己占第 %d 个号，只能往前指）"
+                     % (c.decode("ascii"), num, slot), i)
+            return expect(k, b";")
+        if c == b"C":
+            raise _Unsupported("C: 没有建模")
         fail("认不出的类型标记 %r" % c.decode("latin-1"), i)
 
     end = value(0, 0)
