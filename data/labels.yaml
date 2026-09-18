@@ -219,6 +219,7 @@ labels:
     stars: 通配符个数
     stmt: SQL 语句
     b64: Base64 载荷
+    blob: 外部生成的载荷
     payload: 内层载荷
     uri: uri 属性
     loc: location 属性

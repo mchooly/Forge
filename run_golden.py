@@ -215,7 +215,7 @@ def mutation_coverage(rules):
     #   2. 没指定模板（按「第一条可用」选）而它恰好被选中的
     # 其余样本跟这条模板毫无关系，把它们的产物也算进指纹纯属浪费。
     #
-    # 优化前是「每篡改一条就把**全部**样本重跑一遍」：581 模板 × 1040 样本
+    # 优化前是「每篡改一条就把**全部**样本重跑一遍」：584 模板 × 1053 样本
     # ≈ 60 万次 generate()，实测要跑十几分钟。现在每个模板平均只剩个位数样本。
     by_tpl = defaultdict(list)
     for s in ALL_SAMPLES:
@@ -2055,7 +2055,7 @@ def smoke_doc(rules, fails):
 
         ("默认(sqli) 可用 134 条", n(vuln="sqli"), 134),
 
-        ("模板总数 581 条", len(rules["templates"]), 581),
+        ("模板总数 584 条", len(rules["templates"]), 584),
 
         ("sqli + mysql 36 条", n(vuln="sqli", component="mysql"), 36),
 

@@ -471,3 +471,26 @@ templates:
     source: 手写
     license: ""
     updated: 2026-09-18
+
+  # ---- 外部生成器的粘贴位 ----
+  # ysoserial 的产出是 Java 原生序列化的**二进制**，本工具只产文本、表达不了。
+  # 所以流程是：外部生成 → base64 → 贴到这里 → 用提交方式投递。
+  # 与 `deser.python.pickle.b64` 同一条思路，补上 Java 缺的那半边。
+
+  - id: deser.java.external.b64
+    name: Java 反序列化 · 粘贴 base64（外部生成器）
+    desc: >
+      ysoserial 产出的载荷 base64 之后贴进来。Shiro 的 rememberMe、以及各种
+      把 Cookie/参数 base64 解码后交给 ObjectInputStream.readObject 的点都走这条。
+      base64 看不出结构，所以不做语法校验。
+    vuln: [deser]
+    content_type: [raw]
+    component: [java]
+    version: "*"
+    body: '<<b64>>'
+    vars: [b64]
+    requires: [generator, deser-sink]
+    status: theory
+    source: 手写
+    license: ""
+    updated: 2026-09-19

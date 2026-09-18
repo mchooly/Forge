@@ -306,3 +306,43 @@ templates:
     source: 手写
     license: ""
     updated: 2026-09-18
+
+  # ---- 外部生成器的粘贴位 ----
+  # phpggc 产出的链（Monolog / Laravel / Yii2 …）很多带引用，本工具现在
+  # 也能自己拼了，但**第三方链库更新更快、覆盖面更广**，所以粘贴位仍然要有。
+  # 这里和 `deser.python.pickle.b64` 是同一条思路，补上 PHP 缺的那半边。
+
+  - id: deser.php.external.serialized
+    name: PHP 序列化 · 粘贴外部生成的串
+    desc: >
+      phpggc 的产出，或手写的序列化串，直接贴进来。工具会**校验它**——
+      长度前缀、元素个数、以及引用（R:/r:）是否指得回已经出现的值。
+      校验通过不代表链在目标上能用，只代表这串本身是合法的 PHP 序列化。
+    vuln: [deser]
+    content_type: [serialized]
+    component: [php]
+    version: "*"
+    body: '<<blob>>'
+    vars: [blob]
+    requires: [deser-sink]
+    status: theory
+    source: 手写
+    license: ""
+    updated: 2026-09-19
+
+  - id: deser.php.external.b64
+    name: PHP 序列化 · 粘贴 base64（外部生成器）
+    desc: >
+      phpggc -b 的产出，或目标会把 Cookie 值 base64 解码后再 unserialize 时用。
+      base64 已经看不出结构，所以这一条**不做语法校验**——要校验就用上一条。
+    vuln: [deser]
+    content_type: [raw]
+    component: [php]
+    version: "*"
+    body: '<<b64>>'
+    vars: [b64]
+    requires: [generator, deser-sink]
+    status: theory
+    source: 手写
+    license: ""
+    updated: 2026-09-19
