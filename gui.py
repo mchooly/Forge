@@ -511,13 +511,18 @@ class App(ttk.Frame):
         )
 
     def refresh(self):
-        """状态变了：重算可用模板、必要时重建参数区、重跑生成。"""
-        try:
-            state = self._state()
-            rows = engine.filter_templates(self.rules, state)
-        except engine.RuleError as e:
-            self._set_diag([("错误", str(e))], "")
-            return
+        """状态变了：重算可用模板、必要时重建参数区、重跑生成。
+
+        **状态只读一遍、过滤只跑一遍。** 原来这里是「refresh 读一次状态并
+        过滤一次，_render 再读一次状态、generate 内部又过滤两次」——一次
+        refresh 过滤三遍（192µs × 3，占整次 refresh 的四分之一）。
+        更要紧的是**两次读状态之间控件若变了，左侧列表和右侧产出会不一致**；
+        现在列表和产出共用同一个 state 对象，从构造上就不可能对不上。
+
+        过滤结果从 `generate` 的返回值里取（`res["rows"]`），不再自己算。
+        """
+        state = self._state()
+        rows = engine.filter_templates(self.rules, state)
 
         usable = [r for r in rows if r["usable"]]
         # 只把「因为缺少前提」被筛掉的列出来。漏洞类型/组件/内容类型不符的那些
@@ -577,7 +582,21 @@ class App(ttk.Frame):
 
         self._rebuild_params_if_needed()
         self._refresh_bypass_conflicts()
-        self._render(rows)
+
+        # 刚才更新列表时可能把选中项挪走了（原来那条被筛掉 → 退到第一条可用）。
+        # **必须同步回 state 再生成**：不同步的话 generate 会拿着过期的选中项去
+        # pick_template，报「模板不可用（缺少前提：…）」——而那本该走
+        # 「无可用模板」那条正常路径。smoke_gui 抓到过这个顺序错误。
+        state["template"] = self.selected_template
+
+        err = None
+        try:
+            res = engine.generate(self.rules, state, rows)
+        except engine.RuleError as e:
+            # 真正走到这儿只剩一种情况：用户**主动点了一条灰显的**缺前提模板。
+            # 列表照常画，只把结果区换成错误——不能因为生成失败就白屏。
+            err, res = str(e), None
+        self._render(res, rows, state, err)
 
     @staticmethod
     def _row_label(row):
@@ -805,11 +824,14 @@ class App(ttk.Frame):
 
     # ---- 渲染 ----
 
-    def _render(self, rows):
-        try:
-            res = engine.generate(self.rules, self._state())
-        except engine.RuleError as e:
-            self._tabs({"错误": str(e)})
+    def _render(self, res, rows, state, err):
+        """画结果区。**不重新读状态、不重新生成**——那两件事 refresh() 已经做了。
+
+        `res` 为 None 表示 generate 抛了 RuleError（`err` 是那句话），
+        此时只有结果区变成错误，左边的列表照常。
+        """
+        if err is not None:
+            self._tabs({"错误": err})
             self.lbl_status.configure(text="错误")
             return
 
@@ -824,12 +846,12 @@ class App(ttk.Frame):
             tabs["诊断"] = "\n".join(diag) or "（无）"
             self.lbl_status.configure(text="模板 %s" % res["template"])
         else:
-            tabs["无可用模板"] = self._empty_message(rows)
+            tabs["无可用模板"] = self._empty_message(rows, state)
 
         self._tabs(tabs)
 
-    def _empty_message(self, rows):
-        sug = engine.relax_suggestions(self.rules, self._state())
+    def _empty_message(self, rows, state):
+        sug = engine.relax_suggestions(self.rules, state)
         lines = ["当前条件下没有可用模板。", ""]
         if sug["suggestions"]:
             lines.append("放宽下列任一条即可看到结果：")
@@ -886,10 +908,6 @@ class App(ttk.Frame):
         # 选回原来那个标签页（它还在的话）
         if prev in mapping:
             self.nb.select(list(mapping).index(prev))
-
-    def _set_diag(self, pairs, status):
-        self._tabs({k: v for k, v in pairs})
-        self.lbl_status.configure(text=status)
 
     def copy_current(self):
         idx = self.nb.index("current")

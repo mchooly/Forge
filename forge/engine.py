@@ -177,9 +177,15 @@ def filter_templates(rules, state):
     return out
 
 
-def pick_template(rules, state):
-    """取本次要用的模板。用户指定则用指定的，否则取第一条可用的。"""
-    rows = filter_templates(rules, state)
+def pick_template(rules, state, rows=None):
+    """取本次要用的模板。用户指定则用指定的，否则取第一条可用的。
+
+    `rows` 是调用方**已经算好的**过滤结果。`generate` 本来就要那一份
+    （算 note、算 available），再让这里重算一遍是纯浪费——过滤 584 条
+    要 192µs，而它占一次 GUI refresh 的四分之一。传进来就复用。
+    """
+    if rows is None:
+        rows = filter_templates(rules, state)
     want = state.get("template")
     if want:
         for f in rows:
@@ -602,12 +608,23 @@ def nest(body, inner, depth=0, max_depth=1):
 # ---------------------------------------------------------------- 5+6. 生成
 
 
-def generate(rules, state):
-    """§4 执行契约主干。返回结果字典，不做任何 I/O。"""
-    rows = filter_templates(rules, state)
-    tpl = pick_template(rules, state)
+def generate(rules, state, rows=None):
+    """§4 执行契约主干。返回结果字典，不做任何 I/O。
+
+    结果里带 `rows`（本次的过滤结果）。界面要拿它画模板列表，而过滤一次
+    是 192µs——**同一次调用里算两遍是纯浪费**，让调用方从结果里取。
+
+    `rows` 也可以由调用方传进来。界面必须这么做：它得**先**过滤出列表、
+    据此把选中的模板挪到一条可用的上，**然后**才生成——而过滤只依赖
+    vuln / component / content_type / version / without，**不看选中的模板**，
+    所以先算的那份对生成仍然有效。
+    """
+    if rows is None:
+        rows = filter_templates(rules, state)
+    tpl = pick_template(rules, state, rows)
     if tpl is None:
-        return {"ok": False, "reason": "当前条件下没有可用模板", "available": rows}
+        return {"ok": False, "reason": "当前条件下没有可用模板",
+                "available": rows, "rows": rows}
 
     steps, var_notes = [], []
     text = tpl["body"]
@@ -646,6 +663,7 @@ def generate(rules, state):
         "steps": steps,
         "request": req,
         "outputs": outs,
+        "rows": rows,
         "checks": (var_notes
                    + (["绕过 %s 没有改变载荷 —— 可能被前一步抵消了（检查绕过顺序）"
                        % "、".join(noop)] if noop else [])
