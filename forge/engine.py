@@ -262,6 +262,20 @@ def bypass_pairs(rules, state):
     return sorted(out)
 
 
+def bypass_name(rules, bid):
+    """绕过的**展示名**（中文）。
+
+    绕过没有走 labels.yaml——它的中文名就写在 `bypasses.yaml` 的 `name` 字段里，
+    那是规则定义的一部分，不是一层显示映射。取不到就退回 id，界面不会出现空白。
+
+    GUI 和 TUI 都从这里取名，免得两边各写一份、万一哪天格式不一致。
+    **只给中文名，不带 id**：带上 id 之后 TUI 那行会到 88 列（超 80 会折行），
+    而 41 条绕过的中文名两两不重复，不带 id 也不会混淆。
+    """
+    b = next((x for x in rules["bypasses"] if x["id"] == bid), None)
+    return (b.get("name") or bid) if b else bid
+
+
 def visible_bypasses(rules, state):
     """绕过不做过滤，全量可选，只标互斥（§4.1）。"""
     chosen = set(state.get("bypasses") or [])

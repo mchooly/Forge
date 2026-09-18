@@ -285,7 +285,9 @@ def _ed_bypass(rules, st):
         if not cur:
             print("  （还没加）")
         for a, b in engine.bypass_pairs(rules, st):
-            print("  ⚠ 互斥：%s 与 %s —— 同选会互相抵消" % (a, b))
+            # 显示中文名，不带 id——带上会到 88 列，终端 80 列下会折行
+            print("  ⚠ 互斥：%s 与 %s —— 同选会互相抵消"
+                  % (engine.bypass_name(rules, a), engine.bypass_name(rules, b)))
         v = menu("添加 / 移除", [(b["id"], names[b["id"]]) for b in rows])
         if v in (None, "q"):
             break

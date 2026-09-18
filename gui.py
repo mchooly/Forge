@@ -781,11 +781,18 @@ class App(ttk.Frame):
     # ---- 绕过 ----
 
     def _refresh_bypass_conflicts(self):
-        """互斥提示走引擎的 visible_bypasses——同一份逻辑，TUI 和 GUI 共用。"""
+        """互斥提示走引擎的 visible_bypasses——同一份逻辑，TUI 和 GUI 共用。
+
+        显示的是**中文名**（引擎的 bypass_name）。以前直接打印 `bypass_pairs`
+        返回的 id，于是这里成了界面上唯一一处冒出内部标识符的地方——
+        别处一律是「中文名 id」。
+        """
         st = engine.make_state(bypasses=self.bypass_order)
         pairs = engine.bypass_pairs(self.rules, st)
         self.lbl_conflict.configure(
-            text=("互斥：" + "；".join("%s 与 %s" % (a, b) for a, b in pairs)) if pairs else "")
+            text=("互斥：" + "；".join("%s 与 %s" % (engine.bypass_name(self.rules, a),
+                                                   engine.bypass_name(self.rules, b))
+                                      for a, b in pairs)) if pairs else "")
 
     def _redraw_bypass(self):
         self.lst_bypass.delete(0, "end")
