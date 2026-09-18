@@ -1,0 +1,12 @@
+# 这个项目把跨平台启动器混放在同一层，行尾必须钉死，否则会静默坏掉：
+#
+#   .sh 被转成 CRLF → shebang 变成 "#!/bin/sh\r" → Linux/macOS 上
+#        报 "bad interpreter: No such file or directory"，而且看不出是行尾问题
+#   .bat/.vbs 被转成 LF → cmd.exe 对 LF-only 批处理有已知边缘问题
+#        （goto :label 一类构造），而这两个文件里正好有 if errorlevel / for /f
+#
+# 仓库内一律存 LF；.bat/.vbs 只在检出时转回 CRLF（Windows 惯例）。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.vbs text eol=crlf
+*.sh  text eol=lf
