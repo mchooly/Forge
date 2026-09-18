@@ -777,7 +777,10 @@ def smoke_gui(rules, fails):
 
         def pick(tid):
 
-            ids = [app.lst_templates.get(i).split()[0] for i in range(app.lst_templates.size())]
+            # 从 app.lst_rows 取 id，**不要解析列表的显示文本**。
+            # 谁在前、怎么垫是界面细节，改一次就打断一次测试；GUI 自己
+            # 定位选中项用的也是 lst_rows，测试跟它走同一条路。
+            ids = [r["id"] for r in app.lst_rows]
 
             if tid not in ids:
 

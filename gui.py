@@ -11,6 +11,7 @@
 
 import os
 import sys
+import unicodedata
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -19,6 +20,17 @@ from tkinter.scrolledtext import ScrolledText
 from forge import engine, output
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
+def _pad_w(s, n):
+    """按**显示宽度**右侧补空格：CJK 全角字符占 2 列。
+
+    不能用 `%-26s`——它按**字符数**补，而中文占两个显示列，结果是 id 列
+    会随名字长短一列列飘开。TUI 里有同一份实现（`forge/tui.py` 的 `pad`）。
+    """
+    s = str(s)
+    return s + " " * max(0, n - sum(
+        2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s))
 
 
 class ScrollArea(ttk.Frame):
@@ -80,6 +92,11 @@ class App(ttk.Frame):
         self.grid(sticky="nsew")
         master.rowconfigure(0, weight=1)
         master.columnconfigure(0, weight=1)
+        # 自己这一列必须给权重。不给的话列宽被**最宽的那个子控件**钉死
+        # （目前是输出层，约 922px），窗口更宽时多出来的部分没人认领——
+        # 表现就是右侧一条空白，且窗口拉得越大空白越宽。
+        # 各分区都是 sticky="ew"，列一撑开它们就跟着铺满。
+        self.columnconfigure(0, weight=1)
 
         # ---- 可变状态 ----
         self.without_vars = {r["id"]: tk.BooleanVar() for r in rules["requires"]}
@@ -91,6 +108,7 @@ class App(ttk.Frame):
         self.bypass_order = []
         self.selected_template = None
         self._params_for = None    # 参数区当前是为哪条模板建的
+        self._relayout_job = None  # <Configure> 去抖用的 after id，见 _on_configure
 
         # 绕过下拉的显示文本 -> id。bypass 的中文名在模板数据里（`name` 字段），
         # 不在 labels.yaml——所以这张反查表从 rules 现建。
@@ -122,15 +140,14 @@ class App(ttk.Frame):
     def _build_filters(self):
         box = ttk.LabelFrame(self, text="筛选", padding=6)
         box.grid(row=0, column=0, sticky="ew")
-        for i in range(6):
-            box.columnconfigure(i, weight=1 if i % 2 else 0)
+        self.filter_groups = []      # [(Label, 控件), ...]，顺序即显示顺序
 
-        def combo(col, label, values, width=12):
-            ttk.Label(box, text=label).grid(row=0, column=col * 2, sticky="e", padx=(0, 2))
+        def combo(label, values, width=12):
+            lbl = ttk.Label(box, text=label)
             var = tk.StringVar()
             cb = ttk.Combobox(box, textvariable=var, values=values, width=width, state="readonly")
-            cb.grid(row=0, column=col * 2 + 1, sticky="ew", padx=(0, 10))
             cb.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+            self.filter_groups.append((lbl, cb))
             return var
 
         # 漏洞类型按模板数从多到少排，最常用的排最前
@@ -143,18 +160,25 @@ class App(ttk.Frame):
         ctypes = sorted({c for t in self.rules["templates"] for c in (t.get("content_type") or [])})
 
         # 下拉里显示「SQL 注入 sqli」，取值仍是 id——_state() 里统一 unlabel 还原
-        self.v_vuln = combo(0, "漏洞类型", [self.L("vuln", v) for v in vulns], width=20)
-        self.v_component = combo(1, "组件", ["（不限）"] + comps, width=18)
-        self.v_ctype = combo(2, "内容类型",
+        self.v_vuln = combo("漏洞类型", [self.L("vuln", v) for v in vulns], width=20)
+        self.v_component = combo("组件", ["（不限）"] + comps, width=18)
+        self.v_ctype = combo("内容类型",
                              ["（不限）"] + [self.L("content_type", c) for c in ctypes], width=22)
         self.v_vuln.set(self.L("vuln", "sqli") if "sqli" in counts
                         else (self.L("vuln", vulns[0]) if vulns else ""))
 
-        ttk.Label(box, text="版本").grid(row=0, column=6, sticky="e", padx=(0, 2))
         self.v_version = tk.StringVar()
-        e = ttk.Entry(box, textvariable=self.v_version, width=10)
-        e.grid(row=0, column=7, sticky="w")
-        e.bind("<KeyRelease>", lambda ev: self.refresh())
+        ve = ttk.Entry(box, textvariable=self.v_version, width=10)
+        ve.bind("<KeyRelease>", lambda ev: self.refresh())
+        self.filter_groups.append((ttk.Label(box, text="版本"), ve))
+
+        # 四组控件按可用宽度排，不写死一行——高 DPI（字体放大）下这一行会超过
+        # 窗口宽度，而最外层滚动容器**只有竖向滚动条**，排不下就是看不见。
+        self._filter_layout = None
+        # **只绑这一处**，四个回流共用一个去抖入口：绑四次的话同一个
+        # <Configure> 会被处理四遍。见 _on_configure。
+        self.winfo_toplevel().bind("<Configure>", self._on_configure, add="+")
+        self._relayout_filters()
 
     def _build_requires(self):
         box = ttk.LabelFrame(self, text="目标前提（勾选 = 目标没有这个前提，需要它的模板会被筛掉。括号里是勾上后会筛掉几条）", padding=6)
@@ -177,8 +201,46 @@ class App(ttk.Frame):
         self._require_cols = 0
         # 绑在**顶层窗口**上而不是画布上：窗口比内容窄的时候画布不会变小，
         # 它只是按自然宽度布局然后被裁掉，绑在它身上就永远收不到那次 resize。
-        self.winfo_toplevel().bind("<Configure>", self._relayout_requires, add="+")
         self._relayout_requires()
+
+    # ---------------------------------------------------------- <Configure>
+
+    def _on_configure(self, event=None):
+        """`<Configure>` 的**去抖**入口。四个回流共用它。
+
+        拖拽/最大化时这个事件是成串来的——实测改变一次窗口宽度会触发 **114 个**
+        `<Configure>`，而列数只在其中 1~2 个上真正变化。原先四个回流各自绑一次，
+        每个事件都要重新做一遍字体测量（前提区 42 个名字 + 输出层 11 个 +
+        两个表单 16 组），一次缩放光回流就 140ms，加上 Tk 自身的几何传播共 330ms，
+        表现就是拖动时界面扭曲、要等约一秒才恢复。
+
+        这里合并成「**停下来之后跑一次**」：事件来了先取消待执行的，重新排一个。
+        拖动过程中不重排，松手 60ms 后一次排到位。
+        """
+        if self._relayout_job is not None:
+            self.after_cancel(self._relayout_job)
+        self._relayout_job = self.after(60, self._relayout_all)
+
+    def _relayout_all(self):
+        self._relayout_job = None
+        self._relayout_filters()
+        self._relayout_requires()
+        self._relayout_request()
+        self._relayout_outputs()
+
+    def _widest_text(self, texts, extra, cache_attr):
+        """最宽的一条文字的像素宽 + extra。**结果缓存**。
+
+        这些文字（前提名、渲染器名、字段名）是静态的，字体也不变，量一次就够。
+        而 `f.measure()` 是一次 Tcl 往返，42 个前提名要 0.65ms——一次缩放 114 个
+        配置事件就是 74ms，全花在量同一批不会变的文字上。
+        """
+        w = getattr(self, cache_attr, None)
+        if w is None:
+            f = tkfont.nametofont("TkDefaultFont")
+            w = max(f.measure(t) for t in texts) + extra
+            setattr(self, cache_attr, w)
+        return w
 
     def _relayout_requires(self, event=None):
         # 可用宽度取**顶层窗口**的，不是画布自己的。
@@ -189,8 +251,8 @@ class App(ttk.Frame):
             avail = 900          # 还没映射，先按一个够宽的窗口排
         # 按**最长的那条**估列宽：中文比西文宽，用字体度量量出来最准。
         # 留 26px 给勾选框本身和列间距。
-        f = tkfont.nametofont("TkDefaultFont")
-        widest = max(f.measure(t) for _, t in self.require_checks.values()) + 26
+        widest = self._widest_text((t for _, t in self.require_checks.values()),
+                                   26, "_require_widest")
         cols = max(1, (avail - 16) // max(1, widest))
         cols = max(1, min(len(self.require_checks), cols))
         if cols == self._require_cols:
@@ -198,6 +260,69 @@ class App(ttk.Frame):
         self._require_cols = cols
         for i, (cb, _) in enumerate(self.require_checks.values()):
             cb.grid_configure(row=i // cols, column=i % cols, sticky="w", padx=(0, 12))
+
+    def _reflow_form(self, groups, cache_attr, widths_attr,
+                     label_padx=(0, 2), widget_padx=(0, 12), gap=24):
+        """把 [(Label, 控件), ...] 按可用宽度排成多行，**列宽统一取最宽的那一组**。
+
+        为什么不做逐组贪心装箱（那样能省不少横向空间）：**grid 的列宽是跨行共享的**。
+        第 2 行摆一个「黑名单关键字(逗号隔开)」这样的长标签，会把第 1 行第 1 列的宽度
+        一起撑到那么宽——逐组估算的结果会显著低于实际渲染宽度（实测估算 1058、
+        实际 1329），于是"算着刚好塞进窗口"的一行反而溢出。
+
+        统一列宽不会低估：每列都按最宽的一组算，总宽 ≈ 列数 × 最宽组 ≤ 可用宽度。
+        代价是短控件旁边留白，比"被裁掉看不见"便宜得多。
+        """
+        avail = self.winfo_toplevel().winfo_width() - 48
+        if avail <= 1:
+            avail = 900          # 还没映射，先按一个够宽的窗口排
+        # 每组多宽只量一次就缓存——这些标签和控件的宽度是固定的，
+        # 而 <Configure> 一次缩放会来 114 次（见 _on_configure）。
+        widths = getattr(self, widths_attr, None)
+        if widths is None:
+            f = tkfont.nametofont("TkDefaultFont")
+            # 控件未映射时 winfo_reqwidth() 可能返回 1，那次的估算不能用；
+            # 全部量到真实宽度了才缓存，免得把兜底值钉死。
+            widths = [f.measure(lbl.cget("text")) + max(w.winfo_reqwidth(), 60) + gap
+                      for lbl, w in groups]
+            if all(w.winfo_reqwidth() > 1 for _, w in groups):
+                setattr(self, widths_attr, widths)
+        cols = max(1, min(len(groups), avail // max(1, max(widths))))
+        if cols == getattr(self, cache_attr, None):
+            return
+        setattr(self, cache_attr, cols)
+        for i, (lbl, w) in enumerate(groups):
+            lbl.grid(row=i // cols, column=(i % cols) * 2, sticky="e", padx=label_padx)
+            w.grid(row=i // cols, column=(i % cols) * 2 + 1, sticky="w", padx=widget_padx)
+
+    def _relayout_filters(self, event=None):
+        self._reflow_form(self.filter_groups, "_filter_layout", "_filter_widths")
+
+    def _relayout_request(self, event=None):
+        self._reflow_form(self.request_groups, "_request_layout", "_request_widths",
+                          label_padx=(8, 2), widget_padx=(0, 12))
+
+    def _relayout_outputs(self, event=None):
+        """输出层勾选框按可用宽度回流成多行。
+
+        和 `_relayout_requires` 同一条路子：宽度取**顶层窗口**的，列宽按字体
+        实测量出来（中文比西文宽），不写死列数。
+
+        这一条不是为了好看——横向没有滚动条，排不下就是**看不见**。
+        """
+        avail = self.winfo_toplevel().winfo_width() - 48
+        if avail <= 1:
+            avail = 900          # 还没映射，先按一个够宽的窗口排
+        # 留 26px 给勾选框本身和列间距（与 _relayout_requires 取同一个余量）
+        widest = self._widest_text((cb.cget("text") for cb in self.output_checks),
+                                   26, "_output_widest")
+        cols = max(1, (avail - 16) // max(1, widest))
+        cols = max(1, min(len(self.output_checks), cols))
+        if cols == self._output_cols:
+            return
+        self._output_cols = cols
+        for i, cb in enumerate(self.output_checks):
+            cb.grid_configure(row=i // cols, column=i % cols, sticky="w", padx=(0, 10))
 
     def _build_middle(self):
         pane = ttk.PanedWindow(self, orient="horizontal")
@@ -215,6 +340,14 @@ class App(ttk.Frame):
         self.v_show_excluded = tk.BooleanVar(value=False)
         ttk.Checkbutton(head, text="显示缺前提的", variable=self.v_show_excluded,
                         command=self.refresh).pack(side="right")
+        # 搜索框。默认视图 134 条、不限漏洞类型 581 条，全靠滚不现实；
+        # 而用户往往是**从文档里已经知道模板 id** 才来的，直接搜比滚快得多。
+        # pack(side="right") 是后 pack 的靠左，所以这里的书写顺序和显示顺序相反。
+        self.v_search = tk.StringVar()
+        se = ttk.Entry(head, textvariable=self.v_search, width=16)
+        se.pack(side="right", padx=(0, 6))
+        se.bind("<KeyRelease>", lambda ev: self.refresh())
+        ttk.Label(head, text="搜索").pack(side="right")
 
         self.lst_templates = tk.Listbox(left, exportselection=False, height=6)
         self.lst_templates.grid(row=2, column=0, sticky="nsew")
@@ -262,53 +395,67 @@ class App(ttk.Frame):
         box = ttk.LabelFrame(self, text="提交方式 / 请求参数 / 约束校验", padding=6)
         box.grid(row=4, column=0, sticky="ew", pady=(6, 0))
 
-        # 显式网格：每行 3 组「标签 + 控件」。helper 不再自己算行列——
-        # 原来那版两个 helper 的列位置写死，同一行的两个控件会叠在一起。
+        # 只收集「标签 + 控件」对，行列交给 _relayout_request 按宽度算。
+        # 原来写死 3 列 × 4 行——高 DPI 下这块曾宽到 871px，超过 860 的最小窗口
+        # 宽度，最右那一列直接被裁掉，且横向没有滚动条可救。
+        self.request_groups = []
 
-        def put(row, col, label, widget):
-            ttk.Label(box, text=label).grid(row=row, column=col * 2, sticky="e", padx=(8, 2))
-            widget.grid(row=row, column=col * 2 + 1, sticky="w")
+        def put(label, widget):
+            self.request_groups.append((ttk.Label(box, text=label), widget))
+            return widget
 
-        def sel(row, col, label, values, default):
+        def sel(label, values, default):
             var = tk.StringVar(value=default)
             cb = ttk.Combobox(box, textvariable=var, values=values, width=15, state="readonly")
             cb.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-            put(row, col, label, cb)
+            put(label, cb)
             return var
 
-        def txt(row, col, label, default, width=15):
+        def txt(label, default, width=15):
             var = tk.StringVar(value=default)
             e = ttk.Entry(box, textvariable=var, width=width)
             e.bind("<KeyRelease>", lambda ev: self.refresh())
-            put(row, col, label, e)
+            put(label, e)
             return var
 
-        self.v_submit = sel(0, 0, "提交方式",
+        self.v_submit = sel("提交方式",
                             [self.L("submit", p) for p in output.PLACERS],
                             self.L("submit", "query"))
-        self.v_method = sel(0, 1, "HTTP 方法", ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], "GET")
-        self.v_shell = sel(0, 2, "Shell", ["bash", "zsh", "cmd", "powershell"], "bash")
+        self.v_method = sel("HTTP 方法", ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"], "GET")
+        self.v_shell = sel("Shell", ["bash", "zsh", "cmd", "powershell"], "bash")
 
-        self.v_host = txt(1, 0, "Host", "example.com")
-        self.v_path = txt(1, 1, "Path", "/")
-        self.v_param = txt(1, 2, "参数名", "id")
+        self.v_host = txt("Host", "example.com")
+        self.v_path = txt("Path", "/")
+        self.v_param = txt("参数名", "id")
 
-        self.v_header = txt(2, 0, "Header 名", "X-Test")
-        self.v_cookie = txt(2, 1, "Cookie 名", "sid")
-        self.v_part = sel(2, 2, "上传落点", ["filename", "content"], "filename")
+        self.v_header = txt("Header 名", "X-Test")
+        self.v_cookie = txt("Cookie 名", "sid")
+        self.v_part = sel("上传落点", ["filename", "content"], "filename")
 
-        self.v_maxlen = txt(3, 0, "长度上限", "")
-        self.v_forbid = txt(3, 1, "禁用字符(逗号隔开)", "")
-        self.v_block = txt(3, 2, "黑名单关键字(逗号隔开)", "", 20)
+        self.v_maxlen = txt("长度上限", "")
+        self.v_forbid = txt("禁用字符(逗号隔开)", "")
+        self.v_block = txt("黑名单关键字(逗号隔开)", "", 20)
+
+        self._request_layout = None
+        self._relayout_request()
 
     def _build_output(self):
         box = ttk.LabelFrame(self, text="输出层（多选）", padding=6)
         box.grid(row=5, column=0, sticky="ew", pady=(6, 0))
         # 勾选框只改**显示文本**，variable 的键仍是渲染器 id——输出标签页的名字、
         # 引擎的 outputs 列表都用 id，这里换了键就全对不上了
-        for i, name in enumerate(output.RENDERERS):
-            ttk.Checkbutton(box, text=self.L("render", name), variable=self.output_vars[name],
-                            command=self.refresh).grid(row=0, column=i, sticky="w", padx=(0, 10))
+        self.output_box = box
+        self.output_checks = []
+        for name in output.RENDERERS:
+            cb = ttk.Checkbutton(box, text=self.L("render", name),
+                                 variable=self.output_vars[name], command=self.refresh)
+            self.output_checks.append(cb)
+        # 排几列**按窗口宽度算**，不写死。11 个渲染器排一行要 1497px，超过默认
+        # 窗口宽度（1180）——而最外层滚动容器**只有竖向滚动条**，横向溢出是直接
+        # 裁掉、没有滚动条可救，右边几个渲染器用户根本看不到。
+        # 前提区（_relayout_requires）踩过同一个坑，这里用同一套做法。
+        self._output_cols = 0
+        self._relayout_outputs()
 
         out = ttk.LabelFrame(self, text="结果", padding=4)
         out.grid(row=6, column=0, sticky="nsew", pady=(6, 0))
@@ -378,8 +525,34 @@ class App(ttk.Frame):
         # （选了 sqli 却看到 92 条别的类型）——要换类型直接改上面的下拉框。
         excluded = [r for r in rows
                     if not r["usable"] and (r["reason"] or "").startswith("缺少前提")]
-        self.lbl_count.configure(text="可用 %d 条 · 缺前提 %d 条" % (len(usable), len(excluded)))
+
+        # 搜索只影响**列表显示什么**，不影响计数和前提影响面。
+        # 否则在搜索框里打字时，前提勾选框括号里的数字会跟着乱跳——
+        # 那个数字的含义是"勾上会筛掉几条"，跟你在找哪条模板没关系。
+        total_usable, total_excluded = len(usable), len(excluded)
         self._refresh_require_counts(usable)
+        q = self.v_search.get().strip().lower()
+        if q:
+            def hit(r):
+                return q in r["id"].lower() or q in (r.get("name") or "").lower()
+            usable = [r for r in usable if hit(r)]
+            excluded = [r for r in excluded if hit(r)]
+            if usable or excluded:
+                self.lbl_count.configure(
+                    text="匹配 %d 条 / 可用 %d 条 · 缺前提 %d 条"
+                         % (len(usable) + len(excluded), total_usable, total_excluded))
+            else:
+                # 搜到 0 条时最容易误判成「工具里没有这条模板」，而真实原因
+                # 往往是**漏洞类型选窄了**（在 sqli 视图里搜「反弹」）。
+                # 规则库明明有，就该说清楚它在哪儿。
+                blocked = [r for r in rows if hit(r)]
+                self.lbl_count.configure(
+                    text=("匹配 0 条 / 可用 %d 条 —— 另有 %d 条在其它漏洞类型或组件下"
+                          % (total_usable, len(blocked))) if blocked
+                    else "匹配 0 条 / 可用 %d 条" % total_usable)
+        else:
+            self.lbl_count.configure(
+                text="可用 %d 条 · 缺前提 %d 条" % (total_usable, total_excluded))
 
         # 列表行：可用在前，被筛掉的按开关追加在后。
         # 维护一份与 Listbox 一一对应的 row 数组来定位——用 "%-40s %s" 切开取 id 太脆。
@@ -408,9 +581,24 @@ class App(ttk.Frame):
 
     @staticmethod
     def _row_label(row):
+        """模板列表的一行：**中文名在前，id 在后**。
+
+        名字是拿来扫的，id 是拿来复制进脚本的——阅读顺序上名字该在前面。
+        这也和界面其它地方一致：下拉框、绕过列表显示的都是「中文名 id」。
+
+        id 用 `_pad_w`（**显示宽度**）垫到 26：中位数名字 22 能对齐，更长的会
+        把它顶开——宁可错位也不截断，截断掉的是真正要看的信息。
+
+        列表宽约 409px，id 不垫时本来就会错开，所以必须垫。这个格式下
+        134 行里只有 4 行超出（原来的 id 在前格式是 7 行）——**这是顺带的
+        小改善，不是换顺序的主要理由**，主要理由是阅读顺序和一致性。
+        列表**没有横向滚动条**，超出的部分是硬裁，那 4 行是名字和 id 都最长的。
+        """
+        name = row["name"] or row["id"]
         if row["usable"]:
-            return "%-38s %s" % (row["id"], row["name"])
-        return "✗ %-36s %s  ← %s" % (row["id"], row["name"], row["reason"] or row["note"])
+            return "%s  %s" % (_pad_w(name, 26), row["id"])
+        return "✗ %s  %s  ← %s" % (_pad_w(name, 24), row["id"],
+                                   row["reason"] or row["note"])
 
     def _refresh_require_counts(self, usable):
         """在勾选框上标出「勾上它会筛掉几条」。
@@ -656,9 +844,32 @@ class App(ttk.Frame):
     def _tabs(self, mapping):
         """按 mapping 重建 Notebook。
 
-        每次都整块重建——保持「渲染结果完全由引擎产出决定」这条不变式，
+        整块重建——保持「渲染结果完全由引擎产出决定」这条不变式，
         不在 GUI 侧维护任何增量状态。
+
+        **但内容逐字相同时跳过。** 这个函数占一次 refresh() 的 7ms（总共 9ms）：
+        5 个 ScrolledText 的销毁与重建。而 Host / Path / 参数名 / 版本这些输入框
+        绑的是 `<KeyRelease>`——每敲一个字符就白重建一遍全部标签页。
+
+        另外，重建后**尽量选回原来那个标签页**：改 Host / 参数会改变
+        curl、request 等标签页的内容，内容一变就得重建，而重建默认把选中项
+        重置回第一个——停在「组装链」上边看边调时，每敲一个字符就被打回 raw。
         """
+        # 用 items() 比而不是直接比 dict：dict 的 == 不看顺序，
+        # 万一标签页顺序变了内容没变，会被误判成"没变"。
+        key = list(mapping.items())
+        if getattr(self, "_tabs_key", None) == key:
+            return
+        self._tabs_key = key
+
+        # 记下当前标签页名（重建会销毁控件，之后没法再问）
+        prev = None
+        if self.nb.index("end"):
+            try:
+                prev = self.nb.tab(self.nb.index("current"), "text")
+            except tk.TclError:
+                prev = None
+
         for w in self.nb.winfo_children():
             w.destroy()
         self._tab_texts = {}
@@ -671,6 +882,10 @@ class App(ttk.Frame):
             self.nb.add(frame, text=name)
             # 存下文本框本身：nametowidget 拿到的是外层的 Frame，它没有 .get()
             self._tab_texts[name] = st
+
+        # 选回原来那个标签页（它还在的话）
+        if prev in mapping:
+            self.nb.select(list(mapping).index(prev))
 
     def _set_diag(self, pairs, status):
         self._tabs({k: v for k, v in pairs})
